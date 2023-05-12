@@ -350,7 +350,7 @@ Accuracy (%)
 </tbody>
 </table>
 
-## Forecasting Options
+## 3. Forecasting Options
 
 1.  Infer implied dividend yield
 2.  Option Pricing (RQuantLib library)
