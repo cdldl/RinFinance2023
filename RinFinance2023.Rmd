@@ -1,0 +1,295 @@
+---
+title: |
+  | R in Finance 2023
+  | Ensemble Option Forecasting
+author: "Cyril de Lavergne & Kani Chen"
+date: "2023-05-19"
+output:
+  slidy_presentation:
+    background: black
+    slide_level: 2
+    highlight: yes
+    pandoc_args: [
+    	"--data-dir=/home/cyril/pandoc/usr/share/pandoc/data"
+    ]
+institute: The Hong Kong University of Science and Technology (HKUST)
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r, echo=FALSE}
+# COMPILE THE FILE WITH:
+# /home/cyril/R-4.3.0/bin/Rscript -e "rmarkdown::render('~/RinFinance/RinFinance2023.Rmd',output_format='ioslides_presentation')" 
+
+# ioslides_presentation:
+# pandoc_args: [
+#     "--data-dir=/home/cyril/pandoc/usr/share/pandoc/data"
+#     ]
+
+# DOWNLOAD / LOAD LIBRARIES
+options(warn=-1)
+chooseCRANmirror(ind=1)
+list.of.packages <- c("rmarkdown","data.table","imputeFin","fasttime","roll","doMC",
+                      "FactorAnalytics", "knitr","lightgbm","PerformanceAnalytics",
+                      'Metrics',"RQuantLib") 
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+invisible(suppressMessages(lapply(list.of.packages, function(x) require(x, character.only = TRUE,quietly=TRUE))))
+```
+
+## Forecasting Stock returns
+
+$S_t$:
+
+1. Features as per Bryan Kelly's work (ExpectedReturns library soon)
+2. Missing values (ImputeFin library)
+3. Standardization (FactorAnalytics library  \cite{factoranalytics})
+4. Making predictions (lightgbm library)
+
+## $S_t$: Missing values
+
+```{r, warnings=FALSE, echo=TRUE}
+library(data.table)
+library(doMC)
+library(imputeFin)
+
+imputing_values = function(tmp_data, train_cutoff_date) {
+  tmp_data[,(exposures):=mclapply(.SD,function(x) tryCatch(jitter(x),
+         error=function(e) x, warning=function(w) x), 
+         mc.cores=cores, mc.silent=T)
+       ,by=asset,.SDcols=exposures]
+  tmp_data[,(exposures):=mclapply(.SD, function(x) 
+       tryCatch(impute_AR1_t,
+         error=function(e) x, warning=function(w) x)
+                              , remove_outliers = TRUE
+                              , mc.cores=cores
+                              , mc.silent = TRUE)
+       ,by=asset,.SDcols=exposures]
+  tmp_data
+}
+```
+
+## $S_t$: Features Standardization
+
+$$ts_i = ts_i - \mu_{ts} ,\quad s_1 = ts_i$$
+$$s_i = (1 - \lambda) ts_i + \lambda * s_{i-1}$$
+```{r, warnings=FALSE, message=FALSE, echo=TRUE}
+  library(FactorAnalytics)
+  
+  standardize = function(tmp_data, exposures, train_cutoff_date) {
+    zScore <- function(exposure, train_cutoff_date, lambda=0.9) {
+        mu = mean(exposure[tmp_data$date < train_cutoff_date], na.rm=T)
+        sigma = sd(exposure[tmp_data$date < train_cutoff_date], na.rm=T)
+        ts <- (exposure - mu)^2
+        var_past_2 <- sigma^2
+        sigmaEWMA = vector(mode='numeric',length=length(exposure))
+        for(i in 1:length(exposure)) {
+          var_past_2 = (1- lambda) * ts[i] + lambda * var_past_2
+          sigmaEWMA[i] = var_past_2
+        }
+        sigmaEWMA[which(sigmaEWMA==0)]<- 1
+        as.vector((exposure -  mu) / sqrt(sigmaEWMA))
+    }
+    tmp_data[,(exposures):=mclapply(.SD,function(x) tryCatch(zScore(x, train_cutoff_date),
+                    error=function(e) x, warning=function(w) x)
+                    , mc.cores=cores
+                    , mc.silent = TRUE),by=asset,.SDcols=exposures]
+    tmp_data[order(date)]
+  }
+```
+
+## $S_t$: Target Standardization 
+
+```{r, echo=TRUE}
+library(FactorAnalytics)
+standardizeReturns = function(tmp_data,train_cutoff_date) {
+  computeGarch <- function(returns, train_cutoff_date, omega = 0.09, alpha = 0.1, beta = 0.81) {
+    sdReturns = sd(returns[tmp_data$date < train_cutoff_date], na.rm = TRUE)
+    ts = returns^2
+
+    sigmaGarch = vector(mode='numeric',length=length(returns))
+    sigmaGarch[1] = (1 - alpha - beta) * sdReturns^2 +  alpha * ts[1]
+    for (i in 2:length(returns))
+      sigmaGarch[i] = (1 - alpha - beta) * sdReturns^2 + 
+                      alpha * ts[i] +
+                      beta * sigmaGarch[i-1]
+    
+    sigmaGarch = sqrt(sigmaGarch)
+    return(sigmaGarch)
+  }
+  tmp_data[,sigmaGarch:=computeGarch(ret_exc, train_cutoff_date), by=asset]
+  
+  tmp_data[,ret_exc_lead1m_norm:=ret_exc_lead1m/sigmaGarch]
+}
+
+```
+
+
+## $S_t$: Making predictions
+
+
+```{r, echo=TRUE}
+library(lightgbm)
+lightgbm_model = function(train, val, exposures) {  
+  dtrain <- lgb.Dataset(as.matrix(train[,exposures,with=F])
+                        , label = train$ret_exc_lead1m_norm)
+  dval <- lgb.Dataset.create.valid(dtrain,
+    data=as.matrix(val[,exposures,with=F]),
+    label = val$ret_exc_lead1m_norm) 
+  valids <- list(train = dtrain, test = dval)
+  param <- list(
+    objective = "regression"
+    , metric = "mse"
+    , learning_rate = 0.1
+    , num_iterations=10000
+    , early_stopping_round = 30L
+    , num_rounds = 5L
+    , num_threads=cores
+    , verbosity =0)
+  model <- lgb.train(params=param, data=dtrain, valids=valids)
+  model
+}
+```
+
+## $S_t$: Experiment Results 
+```{r, echo=FALSE}
+  stock_metrics <- t(data.frame(
+     c(0.0134, 64.53)
+  ))
+  colnames(stock_metrics)= c("MSE", "Accuracy (%)")
+  rownames(stock_metrics) = c('Performance')
+  confusion_matrix <- data.frame(
+    val1 = c(2182, 810),
+    val2 = c(1528,2072)
+  )
+  row.names(confusion_matrix) = c("Positive", "Negative")
+  colnames(confusion_matrix) = c("Positive", "Negative")
+```
+```{r, echo=TRUE}
+library(knitr)
+library(Metrics)
+# Monthly Performance Metrics
+kable(stock_metrics, format="html",align='c', booktabs = TRUE)
+# Confusion Matrix
+kable(confusion_matrix, format="html",align='c', booktabs = TRUE)
+```
+
+## Forecasting variance
+
+$\sigma^2$:
+
+1. Filtration (bid available, exclude ITM and so on)
+2. Volatility surface according to OptionMetrics
+3. Making predictions (lightgbm library)
+4. Curve fitting to match with respective option maturities and delta
+
+## $\sigma^2$: Volatility Surface
+
+Kernel function of Smoothed volatility:
+$$ \Phi(x,y,z)= \frac{1}{\sqrt{2\pi}}e^{[(x^2/2h_1)+(y^2/2h_2)+(z^2/2h_3)]}$$
+$$\frac{\sum V_i \sigma_i \Phi(x_{ij},y_{ij},z_{ij})}{\sum V_i \Phi(x_{ij},y_{ij},z_{ij}}$$
+
+```{r, echo=TRUE}
+volSurface = function(data,maturity,delta,call_or_put) {
+  h_1 = 0.05
+  h_2 = 0.005
+  h_3 = 0.001
+  x = log(data$maturity / maturity)
+  y = data$delta - delta
+  z = ifelse(data$type == call_or_put,0,1)
+  kernel = exp(-((x^2)/(2*h_1)+(y^2)/(2* h_2)+(z^2)/(2* h_3))) /
+           sqrt(2*pi)
+  if(call_or_put == 'call') bid = 'callBidIV' else bid= 'putBidIV'
+  vol = sum(data$vega * data[,bid,with=F] * kernel) /
+    sum(data$vega * kernel)
+  return(vol)
+}
+```
+
+## $\sigma^2$: Experiment results
+```{r, echo=FALSE}
+  library(knitr)
+
+  vol_metrics <- t(data.frame(
+     c(1 , 0.001 , 80.67),
+    c(2 , 0.006 , 63.56),
+    c(3 , 0.0075 , 60.31),
+    c(4 , 0.008 , 58.36),
+    c(5 , 0.009 , 57.3),
+    c(6 , 0.0095 , 56.9),
+    c(7 , 0.01 , 56.9),
+    c(8 , 0.01 , 57.5),
+    c(9 , 0.01 , 58.4),
+    c(10 , 0.01 , 59.75)
+  ))
+  colnames(vol_metrics)= c("delta_t", "MSE","Accuracy (%)")
+  rownames(vol_metrics) = vol_metrics[,1]
+```
+$\sigma$ forecasting per investment Horizon $\delta_t$:
+```{r, echo=TRUE}
+kable(vol_metrics, format="html",align='c', booktabs = TRUE)
+```
+
+## Forecasting Options
+
+1. Infer implied dividend yield
+2. Option Pricing (RQuantLib library)
+3. Option Ranking
+4. Backtest Results
+
+```{r, echo=FALSE}
+#Forecasting Options: Infer implied dividend yield
+get_dividend_yield = function(para, data, end_date) {
+  data[,c('valueBS','deltaBS','gammaBS','vegaBS','thetaBS','rho','yo'):=
+    EuropeanOption(type=cp_flag, underlying=close,strike=strike_price
+    , dividendYield=para[1], riskFreeRate=interestRate, maturity=mat_yearly
+      , volatility=impl_volatility)
+        , by=seq.int(nrow(data))]
+
+  op_error = sum( (data$valueBS - data$midpoint)^2,na.rm=T)
+  delta_error = sum((data$deltaBS - data$delta)^2,na.rm=T)
+  gamma_error = sum((data$gammaBS - data$gamma)^2,na.rm=T)
+  vega_error = sum((data$vegaBS - data$vega)^2,na.rm=T)
+  theta_error = sum((data$thetaBS - data$theta)^2,na.rm=T)
+
+return(sqrt(sum(op_error + delta_error + gamma_error+ vega_error + theta_error)))
+}
+```
+
+## Forecasting Options: Pricing Engine
+
+```{r , echo=TRUE}
+library(RQuantLib)
+
+option_pricing = function(options) {
+ options[,paste0('option_price_pred',delta_t):= {
+   if (inherits(try(ans<-AmericanOption('put' 
+                        , expected_stock_price
+                        , strike, divRate, iRate
+                        , expected_maturity
+                        , expected_volatlity
+                        , engine= 'CrankNicolson')$value
+                    ,silent=TRUE),"try-error"))
+     0
+   else
+     ans},
+   by = seq.int(1,nrow(options))]
+}
+```
+
+## Experiments: Backtest Results
+```{r, echo=FALSE}
+  backtest = data.frame(
+    c("2018-03-02","2019-12-26", 10090, 12, 4.88, 38.3, 61.7, 43.22, 1.67, 6.2)
+  )
+  colnames(backtest) = "Performance"
+  row.names(backtest) = c('Start Date', 'End Date', "Number of long trades",
+                          "Number of short trades","PnL","Call gains","Put gains",
+                          "Winning Ratio","Sharpe Ratio","Max Drawdown (%)")
+```
+
+```{r , echo=TRUE}
+  library(PerformanceAnalytics)
+  kable(backtest, format="html",align='c', booktabs = TRUE)
+```
