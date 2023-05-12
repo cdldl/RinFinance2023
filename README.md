@@ -32,8 +32,11 @@
 
 ## *S*<sub>*t*</sub>: Features Standardization
 
-*t**s*<sub>*i*</sub> = *t**s*<sub>*i*</sub> − *μ*<sub>*t**s*</sub>,  *s*<sub>1</sub> = *t**s*<sub>*i*</sub>
-*s*<sub>*i*</sub> = (1−*λ*)*t**s*<sub>*i*</sub> + *λ* \* *s*<sub>*i* − 1</sub>
+$$ts_i = ts_i - \mu_{ts}$$
+
+$$s_1 = ts_i$$
+
+$$s_i = (1 - \lambda) ts_i + \lambda * s_{i-1}$$
 
       library(FactorAnalytics)
       
