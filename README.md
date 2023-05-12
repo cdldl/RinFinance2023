@@ -149,7 +149,7 @@ $$ \frac{\sum V\_i \sigma\_i \Phi(x\_{ij},y\_{ij},z\_{ij})}{\sum V\_i \Phi(x\_{i
 
 ## Forecasting Options: Pricing Engine
 
-    #library(RQuantLib)
+    library(RQuantLib)
 
     option_pricing = function(options) {
      options[,paste0('option_price_pred',delta_t):= {
