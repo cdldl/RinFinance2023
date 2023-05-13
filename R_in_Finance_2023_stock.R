@@ -2,7 +2,7 @@
 chooseCRANmirror(ind=1)
 list.of.packages <- c("rmarkdown","data.table","imputeFin","fasttime","roll","doMC",
                       "FactorAnalytics", "knitr","lightgbm","PerformanceAnalytics",
-                      'Metrics',"RQuantLib","h2o","glmnet") 
+                      'Metrics',"RQuantLib","h2o","glmnet","ranger") 
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 lapply(list.of.packages, function(x) require(x, character.only = TRUE))
