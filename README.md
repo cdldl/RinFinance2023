@@ -122,7 +122,7 @@ Kernel function of Smoothed volatility:
 
 $$ \Phi(x,y,z)= \frac{1}{\sqrt{2\pi}}e^{\[(x^2/2h\_1)+(y^2/2h\_2)+(z^2/2h\_3)\]} $$
 
-$$ \frac{\sum V\_i \sigma\_i \Phi(x\_{ij},y\_{ij},z\_{ij})}{\sum V\_i \Phi(x\_{ij},y\_{ij},z\_{ij}}$$
+$$ \hat{\sigma}_j = \frac{\sum V\_i \sigma\_i \Phi(x\_{ij},y\_{ij},z\_{ij})}{\sum V\_i \Phi(x\_{ij},y\_{ij},z\_{ij}}$$
 
     volSurface = function(data,maturity,delta,call_or_put) {
       h_1 = 0.05
