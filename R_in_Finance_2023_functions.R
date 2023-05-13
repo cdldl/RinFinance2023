@@ -4,29 +4,83 @@ imputing_values = function(tmp_data, train_cutoff_date) {
   tmp_data[,(exposures):=lapply(.SD,function(x) tryCatch(jitter(x),
                                                          error=function(e) x, warning=function(w) x))
            ,by=asset,.SDcols=exposures]
-  func = function(x, train_cutoff_date) {
-    train = x[tmp_data$date < train_cutoff_date]
-    val_and_test = x[tmp_data$date >= train_cutoff_date]
+  func = function(x, date, train_cutoff_date) {
+    train = x[date < train_cutoff_date]
+    val_and_test = x[date >= train_cutoff_date]
     impute_insample = impute_AR1_t(train, remove_outliers = TRUE, return_estimates=TRUE)
     impute_outsample = copy(val_and_test)
     idx_missing = which(!is.finite(val_and_test))
     if(!length(idx_missing)) return(c(impute_insample$y_imputed,impute_outsample))
     for(i in idx_missing) {
-      if(idx_missing==1) { 
-        impute_outsample[i] = impute$phi0 + impute$phi1 * impute_insample$y_imputed[length(impute_insample)]
+      if(i==1) { 
+        impute_outsample[i] = impute_insample$phi0 + 
+          impute_insample$phi1 * impute_insample$y_imputed[length(impute_insample)]
       } else {
-        impute_outsample[i] = impute$phi0 + impute$phi1 * impute_outsample[i-1]  
+        impute_outsample[i] = impute_insample$phi0 + impute_insample$phi1 * impute_outsample[i-1]  
       }
     }
     c(impute_insample$y_imputed,impute_outsample)
   }
   tmp_data[,(exposures):=mclapply(.SD, function(x) 
-    tryCatch(func(x, train_cutoff_date),
+    tryCatch(func(x, date, train_cutoff_date),
              error=function(e) x, warning=function(w) x)
     , mc.cores=cores
     , mc.silent = TRUE)
     ,by=asset,.SDcols=exposures]
   tmp_data
+}
+
+
+# IMPUTE MISSING VALUES FOR VOL
+imputing_values_vol = function(tmp_data, train_cutoff_date) {
+  # tmp_data[,(exposures):=lapply(.SD,function(x) tryCatch(jitter(x),
+  #                                                        error=function(e) x, warning=function(w) x))
+  #          ,by=c('maturity','delta','type','asset'),.SDcols=exposures]
+  func = function(x, date, train_cutoff_date) {
+    train = x[date < train_cutoff_date]
+    val_and_test = x[date >= train_cutoff_date]
+    impute_insample = impute_AR1_t(train, remove_outliers = TRUE, return_estimates=TRUE)
+    impute_outsample = copy(val_and_test)
+    idx_missing = which(!is.finite(val_and_test))
+    if(!length(idx_missing)) return(c(impute_insample$y_imputed,impute_outsample))
+    for(i in idx_missing) {
+      if(i==1) { 
+        impute_outsample[i] = impute_insample$phi0 + 
+          impute_insample$phi1 * impute_insample$y_imputed[length(impute_insample)]
+      } else {
+        impute_outsample[i] = impute_insample$phi0 + impute_insample$phi1 * impute_outsample[i-1]  
+      }
+    }
+    c(impute_insample$y_imputed,impute_outsample)
+  }
+  tmp_data[,(exposures):=mclapply(.SD, function(x) 
+    tryCatch(func(x, date, train_cutoff_date),
+             error=function(e) x, warning=function(w) x)
+    , mc.cores=cores
+    , mc.silent = TRUE)
+    ,by=c('maturity','delta','type','asset'),.SDcols=exposures]
+  tmp_data
+}
+
+# REPLACE BAD VOL VALUES
+replace_bad_vol = function(data) {
+  while( any(data$vol <= 0)) {
+    me = mean(data$vol,na.rm=T)
+    lagged =shift(data$vol,1,fill=me,type='lag')
+    set(data,which(data$vol <= 0),'vol',lagged[which(data$vol <= 0)])
+  }
+}
+
+# CREATE VOL FEATURES
+vol_features = function(data) {
+  min_date = min(data$date)
+  data[,days_from_start:=date - min_date]
+  data[,day_of_week:=data.table::wday(date)]
+  data[,day_of_month:=data.table::mday(date)]
+  data[,month:=data.table::month(date)]
+  data[,week_of_year:=week(date)]
+  data[,log_vol:=log(vol)]
+  data
 }
 
 # STANDARDIZE EXPOSURES WITH TRAINING AND TESTING SET
@@ -149,7 +203,7 @@ lightgbm_model = function(train, val, exposures) {
   model
 }
 
-rf_model = function(train, exposures, target, weights) {
+rf_model = function(train, exposures, target, weights=NULL) {
   model = ranger(train[,target,with=F] ~ .,data= train[,exposures,with=F],
                  importance="impurity",case.weights=weights)
   model
@@ -181,6 +235,79 @@ rolling_ml = function(data, val_cutoff_date) {
   data[date >= val_cutoff_date]
 }
 
+# CREATING VOL SURFACE
+create_vol_surface = function(files_strikes, path_strikes_output) {
+  grid.param <- expand.grid(files_strikes)
+  fe <- foreach(param = iter(grid.param, by = "row"), 
+                .verbose = TRUE, .errorhandling = "pass",  
+                .multicombine = TRUE, .maxcombine = max(2, nrow(grid.param)))
+  fe$args <- fe$args[1]
+  fe$argnames <- fe$argnames[1]
+  
+  results <- fe %dopar% {  
+    # FOR EACH FILE
+    strike = files_strikes[param[1]]
+    #strike=files_strikes[1]  
+    date = strsplit(strike,'_|.csv')[[1]][4]
+    if(file.exists(file.path(path_strikes_output, date))) return(NULL)
+    print(strike)
+    file = fread(paste0(files_strikes_path,strike))
+    dir.create(file.path(path_strikes_output, date), showWarnings = FALSE)
+    file[,cOpra:=NULL]
+    file[,pOpra:=NULL]
+    file[,cMidpoint:=(cBidPx+cAskPx)/2]
+    file[,pMidpoint:=(pBidPx+pAskPx)/2]
+    file[,maturity:=round(yte*365)]
+    file[,date:=as.character(anytime(trade_date))]
+    # FOR EACH OF THESE VALUES (GRID), COMPOUND THE RESPECTIVE VOL
+    deltas = c(0.05,0.25,0.5,0.75,0.95)
+    maturities = c(10,20,30,60,90,180)/365
+    calls_or_puts = c('call','put')
+    grid = expand.grid(maturity=maturities,delta=deltas,type=calls_or_puts)
+    for( tmp_ticker in sort(unique(file$ticker))) {
+      #tmp_ticker = sort(unique(file$ticker))[1]
+      all_vol_surf = NULL
+      tmp_file = file[ticker == tmp_ticker]
+      tmp_file = filterOptions(tmp_file)
+      for(i in 1:nrow(grid)) {
+        #i=1
+        tmp_values = grid[i,]
+        vol = volSurface(tmp_file,tmp_values$maturity,tmp_values$delta,
+                         as.character(tmp_values$type))
+        all_vol_surf = rbind(all_vol_surf, cbind(tmp_values,vol))
+      }
+      x = data.table(all_vol_surf)
+      fwrite(x, paste0(path_strikes_output,date,'/',tmp_ticker,'.csv'))
+    }
+    return(NULL)
+  }
+}
+
+# CONCATENATE VOL SURFACE 
+concatenate_vol_surfaces = function(vol_surfaces, path_vol_surf_by_ticker) {
+  grid.param <- expand.grid(vol_surfaces)
+  
+  fe <- foreach(param = iter(grid.param, by = "row"),
+                .verbose = TRUE, .errorhandling = "pass",
+                .multicombine = TRUE, .maxcombine = max(2, nrow(grid.param)))#,
+  fe$args <- fe$args[1]
+  fe$argnames <- fe$argnames[1]
+  results <- fe %dopar% {
+    tmp_date = as.character(param[1])
+    #tmp_date = vol_surfaces[1]
+    yo = strsplit(tmp_date,'/')[[1]][length(strsplit(tmp_date,'/')[[1]])]
+    yo_date = paste0(substr(yo,1,4),'-',substr(yo,5,6),'-',substr(yo,7,8))
+    ticker_files = list.files(tmp_date)
+    for(file in ticker_files) {
+      tmp_data = fread(paste0(tmp_date,'/',file))
+      tmp_data[,date:=yo_date]
+      fwrite(tmp_data,paste0(path_vol_surf_by_ticker,file), append=T)
+    }
+    return(NULL)
+  }
+}
+
+
 
 making_preds = function(models, test, exposures) {
   tmp_data = copy(test)
@@ -193,9 +320,11 @@ making_preds = function(models, test, exposures) {
 
 making_ensemble_by_ticker =function(data, preds_name) {
   func_ensemble = function(target, predictions) {
-    linear_coeffs = roll_lm(as.matrix(predictions),target,width=12,min_obs=1)$coefficients[1:(length(target)-1),]
+    linear_coeffs = roll_lm(as.matrix(predictions),target,width=12,
+                            min_obs=1)$coefficients[1:(length(target)-1),]
     for(i in 1:ncol(linear_coeffs)) linear_coeffs[which(!is.finite(linear_coeffs[,i])),i] =0
-    linear_preds = linear_coeffs[,1] + diag(linear_coeffs[,2:ncol(linear_coeffs)] %*% t(predictions[2:nrow(predictions),]))
+    linear_preds = linear_coeffs[,1] + diag(linear_coeffs[,2:ncol(linear_coeffs)] %*%
+                                              t(predictions[2:nrow(predictions),]))
     c(0,linear_preds)
   }
   data= data[order(date)]
