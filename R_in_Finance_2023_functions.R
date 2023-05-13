@@ -8,13 +8,15 @@ imputing_values = function(tmp_data, train_cutoff_date) {
     train = x[tmp_data$date < train_cutoff_date]
     val_and_test = x[tmp_data$date >= train_cutoff_date]
     impute_insample = impute_AR1_t(train, remove_outliers = TRUE, return_estimates=TRUE)
-    impute_outsample = val_and_test
+    impute_outsample = copy(val_and_test)
     idx_missing = which(!is.finite(val_and_test))
     if(!length(idx_missing)) return(c(impute_insample$y_imputed,impute_outsample))
     for(i in idx_missing) {
-      if(idx_missing==1) impute_outsample[i] = impute$phi0 + impute$phi1 *         
-          impute_insample$y_imputed[length(impute_insample)]
-      impute_outsample[i] = impute$phi0 + impute$phi1 * impute_outsample[i-1]
+      if(idx_missing==1) { 
+        impute_outsample[i] = impute$phi0 + impute$phi1 * impute_insample$y_imputed[length(impute_insample)]
+      } else {
+        impute_outsample[i] = impute$phi0 + impute$phi1 * impute_outsample[i-1]  
+      }
     }
     c(impute_insample$y_imputed,impute_outsample)
   }
@@ -71,7 +73,7 @@ standardizeReturns = function(tmp_data,train_cutoff_date) {
 }
 
 # STANDARDIZE RETURNS WITH BEST NORMALIZE PACKAGE
-standardizeReturns = function(tmp_data, train_cutoff_date, val_cutoff_date) {
+standardizeReturnsBestNormalize = function(tmp_data, train_cutoff_date, val_cutoff_date) {
   train = tmp_data[date < train_cutoff_date]
   val = tmp_data[(date >=train_cutoff_date) & (date < val_cutoff_date)]
   test = tmp_data[date > val_cutoff_date]
@@ -147,9 +149,36 @@ lightgbm_model = function(train, val, exposures) {
   model
 }
 
-rf_model = function(train, exposures) {
-  model = ranger(train$ret_exc_lead1m_norm ~ .,data= train[,exposures,with=F],importance="impurity")
+rf_model = function(train, exposures, target, weights) {
+  model = ranger(train[,target,with=F] ~ .,data= train[,exposures,with=F],
+                 importance="impurity",case.weights=weights)
   model
+}
+
+# GET MARKET CAP WEIGHTS
+get_market_cap_weights = function(train) {
+  me_weights = train[date == last(date),c('me','asset'),with=F]
+  me_weights[,weights:=sqrt(abs(me))/sum(sqrt(abs(me)))]
+  train = merge(train,me_weights[,c('asset','weights'),with=F],by='asset')
+  train[,weights:=weights/length(ret_exc),by=asset]
+  train
+}
+
+# ROLLING ML
+rolling_ml = function(data, val_cutoff_date) {
+  dates = sort(unique(data[date >= val_cutoff_date]$date))
+  for(i in 1:length(dates)) {
+    # i=1
+    tmp_date = dates[i]
+    tmp_train = data[date < tmp_date]  
+    tmp_train = get_market_cap_weights(tmp_train)
+    exposures = feature_selection(tmp_train)
+    # ADD AUTOML AND LIGHTGBM
+    model = rf_model(tmp_train, exposures, target, tmp_train$weights)
+    set(data,which(data$date == tmp_date),'preds',
+        predict(model,data[date == tmp_date,exposures,with=F])$predictions)
+  }
+  data[date >= val_cutoff_date]
 }
 
 
@@ -162,29 +191,165 @@ making_preds = function(models, test, exposures) {
   tmp_data
 }
 
-making_ensemble =function(data, preds_name) {
+making_ensemble_by_ticker =function(data, preds_name) {
   func_ensemble = function(target, predictions) {
     linear_coeffs = roll_lm(as.matrix(predictions),target,width=12,min_obs=1)$coefficients[1:(length(target)-1),]
     for(i in 1:ncol(linear_coeffs)) linear_coeffs[which(!is.finite(linear_coeffs[,i])),i] =0
     linear_preds = linear_coeffs[,1] + diag(linear_coeffs[,2:ncol(linear_coeffs)] %*% t(predictions[2:nrow(predictions),]))
     c(0,linear_preds)
   }
+  data= data[order(date)]
   data[,preds_ens:=func_ensemble(ret_exc_lead1m, .SD),by=asset, .SDcols=preds_name]
 }
 
+making_ensemble_by_date =function(data, preds_name) {
+  dates = sort(unique(data$date))
+  data = data[order(date)]
+  for(i in 3:length(dates)) {
+    tmp_date = dates[i]
+    tmp_data = data[date < dates[i-1]]
+    model = lm(ret_exc_lead1m_norm~ .,data=tmp_data[,c(preds_name,'ret_exc_lead1m_norm'),with=F],
+               weights=tmp_data$mve)
+    print(summary(model)$r.squared)
+    set(data,which(data$date == tmp_date),"preds_ens",predict(model, 
+                                                              data[which(data$date == tmp_date)
+                                                                       ,preds_name,with=F]))
+  }
+  data#[,list(models=lm(ret_exc_lead1m ~., data=.SD),by=date, .SDcols=preds_name]
+}
 
+autoML = function(train,val,test, exposures, target) {
+  h2o.init()
+  train.hex  <- as.h2o(train)
+  val.hex = as.h2o(val)
+  test.hex = as.h2o(test)
+  
+  automl_h2o_models <- h2o.automl(
+    x = exposures, 
+    y = target,
+    training_frame    = train.hex,
+    leaderboard_frame = val.hex
+  )
+  pred_conversion <- h2o.predict(object = automl_h2o_models, newdata = val.hex)
+  val[,preds:=as.vector(pred_conversion)]
+  pred_conversion <- h2o.predict(object = automl_h2o_models, newdata = test.hex)
+  test[,preds:=as.vector(pred_conversion)]
+  return(list(val, test))
+  #val_and_test = autoML(train,val,test, exposures, target)
+  # val = val_and_test[[1]]
+  # test  = val_and_test[[2]]
+  # fwrite(val,'/home/cyril/RinFinance/val_with_preds.csv')
+  # fwrite(test,'/home/cyril/RinFinance/test_with_preds.csv')
+}
+
+feature_selection = function(data) {
+  # OPTIMIZE LAMBDA
+  lambdas <- 10^seq(2, -4, by = -.1)
+  lasso_reg <- cv.glmnet(as.matrix(data[,exposures,with=F]), 
+                         data$ret_exc_lead1m, alpha = 1, lambda = lambdas, nfolds = 5,
+                         parallel = TRUE,weights=data$weights)
+  lambda_best <- lasso_reg$lambda.min 
+  
+  # FEATURE SELECTION
+  lasso_model <- glmnet(as.matrix(data[,exposures,with=F]),
+                        data$ret_exc_lead1m, alpha = 1, lambda = lambda_best
+                        ,weights=data$weights)
+  features = row.names(lasso_model$beta)[which(as.numeric(lasso_model$beta)!=0)]
+  features
+}
+
+get_metrics = function(data) {
+  weights=sqrt(abs(data$me))/sum(sqrt(abs(data$me)))
+  
+  # WEIGHTED CORRELATION
+  x_wt_mean <- weighted.mean(data$preds, weights)
+  y_wt_mean <- weighted.mean(data$ret_exc_lead1m, weights)
+  cov_wt <- cov.wt(data[,c('preds','ret_exc_lead1m')], wt = weights)$cov[1,2]
+  wt_cor <- cov_wt / (sqrt(sum(weights * (data$preds - x_wt_mean)^2) / sum(weights)) * 
+                        sqrt(sum(weights * (data$ret_exc_lead1m - y_wt_mean)^2) / sum(weights)))
+  
+  # WEIGHTED ACCURACY
+  acc = weighted.mean(sign(data$preds)==sign(data$ret_exc_lead1m),weights)
+  
+  # TAIL ACCURACY
+  quants=fifelse(abs(data$preds) >= quantile(abs(data$preds),0.95),TRUE,FALSE)
+  metrics = data[quants == T]
+  acc2 = weighted.mean(sign(metrics$preds)==sign(metrics$ret_exc_lead1m),weights[quants==T])
+  
+  list(weighted_cor=wt_cor, weighted_accuracy=acc, tail_weighted_accuracy=acc2)
+}
+
+# Source https://tsimagine.com/2020/09/thinking-about-building-a-volatility-surface-think-again/
+filterOptions = function(data) {
+  # CALLS
+  calls = copy(data)
+  # Check for zeros
+  calls = calls[cBidPx > 0.05 & cBidIv > 0 & yte > 0]
+  # Remove in-the-money options
+  calls[,diff_cal_put:=abs(cValue - pValue)]
+  calls[,forward:=strike[which.min(diff_cal_put)] + exp(iRate * yte)* (cValue[which.min(diff_cal_put)]  - pValue[which.min(diff_cal_put)]),by=yte]
+  calls = calls[strike >= strike[which.min(diff_cal_put)]]
+  # Eliminate options where prices are not increasing or decreasing monotonically. 
+  calls = calls[order(strike)]
+  to_keep = calls[,cValue <= shift(cValue,1,type='lag',fill=Inf),by=yte]
+  calls = calls[to_keep$V1 ==T]
+  # Eliminate options where the bid/ask spread is too high.
+  calls[,spread:=cAskPx - cBidPx]
+  calls[,mu:=mean(spread),by=yte]
+  calls[,sigma:=sd(spread),by=yte]
+  calls = calls[spread < (mu + 4*sigma) | is.na(sigma)]
+  # Remove If the number of remaining strikes is below 20% of the median number of strikes on the curve
+  calls[,len:=nrow(.SD),by=yte]
+  calls[,cutoff:=0.2*median(len)]
+  calls = calls[len> cutoff]
+  # Liquidity checks
+  calls = calls[cVolu != 0 | cOi != 0]
+  
+  # PUTS
+  puts = copy(data)
+  puts[,delta:= 1 - delta]
+  # Check for zeroes
+  puts = puts[pBidPx > 0.05 & pBidIv > 0 & yte > 0]
+  # Remove in-the-money options
+  puts[,diff_cal_put:=abs(cValue - pValue)]
+  puts[,forward:=strike[which.min(diff_cal_put)] + exp(iRate * yte)* (cValue[which.min(diff_cal_put)]  - pValue[which.min(diff_cal_put)]),by=yte]
+  puts = puts[strike <= strike[which.min(diff_cal_put)]]
+  # Eliminate options where prices are not increasing or decreasing monotonically. 
+  puts = puts[order(strike)]
+  to_keep = puts[,pValue >= shift(pValue,1,type='lag',fill=0),by=yte]
+  puts = puts[to_keep$V1 ==T]
+  # Eliminate options where the bid/ask spread is too high.
+  puts[,spread:=pAskPx - pBidPx]
+  puts[,mu:=mean(spread),by=yte]
+  puts[,sigma:=sd(spread),by=yte]
+  puts = puts[spread < (mu + 4*sigma) | is.na(sigma)]
+  # Remove If the number of remaining strikes is below 20% of the median number of strikes on the curve
+  puts[,len:=nrow(.SD),by=yte]
+  puts[,cutoff:=0.2*median(len)]
+  puts = puts[len > cutoff]
+  # Liquidity checks
+  puts = puts[pVolu != 0 | pOi != 0]
+  
+  # Stack
+  calls[,type:='call']
+  puts[,type:='put']
+  all =rbind(calls,puts)
+  return(all)
+}
+
+# CREATE VOLATILITY SURFACE FROM RAW OPTION PRICES
 volSurface = function(data,maturity,delta,call_or_put) {
   h_1 = 0.05
   h_2 = 0.005
   h_3 = 0.001
-  x = log(data$maturity / maturity)
+  x = log(as.numeric(data$yte) / maturity)
   y = data$delta - delta
   z = ifelse(data$type == call_or_put,0,1)
   kernel = exp(-((x^2)/(2*h_1)+(y^2)/(2* h_2)+(z^2)/(2* h_3))) /
     sqrt(2*pi)
-  if(call_or_put == 'call') bid = 'callBidIV' else bid= 'putBidIV'
-  vol = sum(data$vega * data[,bid,with=F] * kernel) /
-    sum(data$vega * kernel)
+  if(call_or_put == 'call') bid = 'cBidIv' else bid= 'pBidIv'
+  vol = sum(as.numeric(data$vega) * data[[bid]] * kernel) /
+    sum(as.numeric(data$vega) * kernel)
   return(vol)
 }
 
