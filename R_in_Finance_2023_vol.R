@@ -29,7 +29,7 @@ files_strikes = list.files(files_strikes_path)
 create_vol_surface(files_strikes, path_vol_surface_by_date)
 
 
-# CONCATENATE VOL SURFACE 
+# CONCATENATE VOL SURFACE
 vol_surfaces = list.dirs(path_vol_surface_by_date)
 concatenate_vol_surfaces(vol_surfaces, path_vol_surf_by_ticker)
 
@@ -38,30 +38,32 @@ files = list.files(path_vol_surf_by_ticker)
 files = files[files %in% paste0(symbol_universe,'.csv')]
 data = NULL
 for(file in files) {
-  tmp_data = fread(paste0(path_vol_surf_by_ticker,file))
+  tmp_data = fread(paste0(path_vol_surf_by_ticker,file), col.names=c('maturity','delta','type','vol','date'))
   tmp_data[,asset:=gsub('.csv','',file)]
   data = rbind(data,tmp_data)
 }
 
 # IMPUTING MISSING VALUES
-set(data,which(data$vol==0.),'vol',NA)
+set(data,which(data$vol==0. |!is.finite(data$vol)),'vol',NA)
 data = data[order(date)]
-data = imputing_values_vol(data, train_cutoff_date)
+data = imputing_values_vol(copy(data), 'vol',train_cutoff_date)
+data = data[order(date)]
 
-# REPLACE BAD VALUES
-data[,vol:=replace_bad_vol(.SD),by=c('maturity','delta','type','asset')]
+# REPLACE LEADING NAs
+data[,vol:=replace_leading_na(vol),by=c('maturity','delta','type','asset')]
 
 # CREATE VOL FEATURES
 data = vol_features(data)
+data = data[complete.cases(data)]
 
 # MAKE PREDICTIONS
 target = 'log_vol'
 exposures = names(which(sapply(data,is.numeric)==TRUE))
 exposures = exposures[which(!exposures %in% target)]
+data = data[order(date)]
 train = data[date < val_cutoff_date]
 test = data[date >= val_cutoff_date]
 model = rf_model(train, exposures, target)
-test[,preds_vol:=predict(model,test[,exposures,with=F])$predictions]
-fwrite(data,'/home/cyril/RinFinance/data_options.csv')
-fwrite(test,'/home/cyril/RinFinance/data_options_wpreds.csv')
+test[,preds_vol:=exp(predict(model,test[,exposures,with=F])$predictions)]
+fwrite(test,'/home/cyril/RinFinance/vol_surface_wpreds.csv')
 

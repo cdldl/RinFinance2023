@@ -19,7 +19,7 @@ imputing_values = function(tmp_data, train_cutoff_date) {
         impute_outsample[i] = impute_insample$phi0 + impute_insample$phi1 * impute_outsample[i-1]  
       }
     }
-    c(impute_insample$y_imputed,impute_outsample)
+    return(c(impute_insample$y_imputed,impute_outsample))
   }
   tmp_data[,(exposures):=mclapply(.SD, function(x) 
     tryCatch(func(x, date, train_cutoff_date),
@@ -30,19 +30,24 @@ imputing_values = function(tmp_data, train_cutoff_date) {
   tmp_data
 }
 
-
 # IMPUTE MISSING VALUES FOR VOL
-imputing_values_vol = function(tmp_data, train_cutoff_date) {
+imputing_values_vol = function(tmp_data, exposures, train_cutoff_date) {
   # tmp_data[,(exposures):=lapply(.SD,function(x) tryCatch(jitter(x),
   #                                                        error=function(e) x, warning=function(w) x))
   #          ,by=c('maturity','delta','type','asset'),.SDcols=exposures]
-  func = function(x, date, train_cutoff_date) {
-    train = x[date < train_cutoff_date]
-    val_and_test = x[date >= train_cutoff_date]
+  func = function(x, train_cutoff_date) {
+    #x = data[maturity==maturity[whi[1]] & delta == delta[whi[1]] & type == type[whi[1]] & asset == asset[whi[1]]]$vol
+    #date= data[maturity==maturity[1] & delta == delta[1] & type == type[1] & asset == asset[1]]$date
+    # x = tmp_data2[[1]]
+    train = x[date < train_cutoff_date]$vol
+    val_and_test = x[date >= train_cutoff_date]$vol
     impute_insample = impute_AR1_t(train, remove_outliers = TRUE, return_estimates=TRUE)
     impute_outsample = copy(val_and_test)
     idx_missing = which(!is.finite(val_and_test))
-    if(!length(idx_missing)) return(c(impute_insample$y_imputed,impute_outsample))
+    if(!length(idx_missing)) {
+      x[,vol:=c(impute_insample$y_imputed,impute_outsample)]
+      return(x)
+    } 
     for(i in idx_missing) {
       if(i==1) { 
         impute_outsample[i] = impute_insample$phi0 + 
@@ -51,24 +56,37 @@ imputing_values_vol = function(tmp_data, train_cutoff_date) {
         impute_outsample[i] = impute_insample$phi0 + impute_insample$phi1 * impute_outsample[i-1]  
       }
     }
-    c(impute_insample$y_imputed,impute_outsample)
+    x[,vol:=c(impute_insample$y_imputed,impute_outsample)]
+    return(x)
   }
-  tmp_data[,(exposures):=mclapply(.SD, function(x) 
-    tryCatch(func(x, date, train_cutoff_date),
+  tmp_data2 = split(tmp_data,by=c('maturity','delta','type','asset'))
+  results = mclapply(tmp_data2, function(x) 
+    tryCatch(func(x, train_cutoff_date),
              error=function(e) x, warning=function(w) x)
     , mc.cores=cores
-    , mc.silent = TRUE)
-    ,by=c('maturity','delta','type','asset'),.SDcols=exposures]
+    , mc.silent = FALSE)
+  tmp_data = do.call(rbind,results)
   tmp_data
 }
 
-# REPLACE BAD VOL VALUES
+# REPLACE LEADING NAs
+replace_leading_na <- function(x) {
+  if (is.na(x[1])) {
+    na_idx <- which(!is.na(x))
+    if (length(na_idx) > 0) {
+      x[1:(na_idx[1] - 1)] <- x[na_idx[1]]
+    }
+  }
+  return(x)
+}
 replace_bad_vol = function(data) {
+  print(data)
   while( any(data$vol <= 0)) {
     me = mean(data$vol,na.rm=T)
     lagged =shift(data$vol,1,fill=me,type='lag')
-    set(data,which(data$vol <= 0),'vol',lagged[which(data$vol <= 0)])
+    data[which(vol <= 0)]$vol = lagged[which(data$vol <= 0)]
   }
+  data$vol
 }
 
 # CREATE VOL FEATURES
@@ -301,7 +319,7 @@ concatenate_vol_surfaces = function(vol_surfaces, path_vol_surf_by_ticker) {
     for(file in ticker_files) {
       tmp_data = fread(paste0(tmp_date,'/',file))
       tmp_data[,date:=yo_date]
-      fwrite(tmp_data,paste0(path_vol_surf_by_ticker,file), append=T)
+      fwrite(tmp_data,paste0(path_vol_surf_by_ticker,file), col.names=F, append=T)
     }
     return(NULL)
   }
@@ -385,6 +403,25 @@ feature_selection = function(data) {
                         ,weights=data$weights)
   features = row.names(lasso_model$beta)[which(as.numeric(lasso_model$beta)!=0)]
   features
+}
+
+calculate_ratios <- function(returns, benchmark_returns, rf = 0, omega_threshold = 0, ...) {
+  # Calculate excess returns
+  excess_returns <- Return.excess(returns, Rf = rf)
+  benchmark_excess_returns <- Return.excess(benchmark_returns, Rf = rf)
+  
+  # Calculate ratios
+  ir <- InformationRatio(returns, benchmark_returns)
+  sharpe_ratio <- SharpeRatio.annualized(excess_returns, Rf = rf)[1]
+  sortino_ratio <- SortinoRatio(excess_returns)
+  treynor_ratio <- TreynorRatio(excess_returns, benchmark_excess_returns, Rf = rf)
+  jensen_alpha <- CAPM.jensenAlpha(excess_returns, benchmark_excess_returns, Rf = rf)
+  omega_ratio <- OmegaSharpeRatio(returns)
+  mdd <- maxDrawdown(returns)
+  
+  # Return a named vector of ratios
+  return(c(Sharpe = sharpe_ratio, Sortino = sortino_ratio, Treynor = treynor_ratio,
+           Jensen = jensen_alpha, Omega = omega_ratio, IR = ir, MDD = mdd, ...))
 }
 
 get_metrics = function(data) {

@@ -2,14 +2,14 @@
 chooseCRANmirror(ind=1)
 list.of.packages <- c("rmarkdown","data.table","imputeFin","fasttime","roll","doMC",
                       "FactorAnalytics", "knitr","lightgbm","PerformanceAnalytics",
-                      'Metrics',"RQuantLib","h2o","glmnet","ranger") 
+                      'Metrics',"RQuantLib","h2o","glmnet","ranger", "PerformanceAnalytics") 
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 lapply(list.of.packages, function(x) require(x, character.only = TRUE))
 
 # LOAD FUNCTIONS
 source(file = '~/RinFinance/R_in_Finance_2023_functions.R')
-
+riskfree_file = '/home/cyril/TRADING/EOD/data/INDX/US1M.INDX.csv'
 # CONSTANTS
 target = 'ret_exc_lead1m'
 train_cutoff_date = "2015-01-01"
@@ -55,9 +55,35 @@ data = standardizeReturns(copy(data), train_cutoff_date)
 
 # TRAINING MODELS
 test = rolling_ml(data, val_cutoff_date)
-metrics = test[,get_metrics(.SD),by=date]
-print(sapply(metrics[,2:4,with=F],quantile))
 fwrite(data,'/home/cyril/RinFinance/data2.csv')
 fwrite(test,'/home/cyril/RinFinance/test_wpreds.csv')
 
 
+# CALCULATE PERFORMANCE RATIOS
+
+# GET RAW PRED METRICS
+test = fread('/home/cyril/RinFinance/stock_wpreds.csv')
+metrics = test[,get_metrics(.SD),by=date]
+print(sapply(metrics[,2:4,with=F],quantile))
+
+# GET PORTFOLIO RETURNS
+test[,weights:=sqrt(abs(me))/sum(sqrt(abs(me))),by=date]
+test[,weights2:=fifelse(abs(preds) > quantile(abs(preds),0.95),
+                       sqrt(abs(me)),0),by=date]
+test[,weights2:=weights2 /sum(weights2),by=date]
+returns = test[,list(porf_returns=sum(sign(preds) * ret_exc_lead1m * weights2),
+           benchmark=sum(ret_exc_lead1m * weights)),by=date]
+
+# GET RISK-FREE RATE
+rf = fread(riskfree_file)
+rf[,date:=Date]
+rf[,rf:=Adjusted_close/100]
+rf[,year_month:=format(date,'%Y-%m')]
+rf = rf[,.SD[.N],by=year_month]
+returns[,year_month:=format(date,'%Y-%m')]
+returns = merge(returns,rf[,c('year_month','rf')],by='year_month')
+
+# COMPOUND RATIOS
+xt = xts(returns[,3:ncol(returns),with=F],order.by=returns$date)
+ratios <- calculate_ratios(xt$porf_returns, xt$benchmark, (1+mean(xt$rf))^(1/12) -1)
+print(ratios)
