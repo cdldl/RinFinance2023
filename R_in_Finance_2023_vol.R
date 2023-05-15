@@ -56,14 +56,7 @@ data[,vol:=replace_leading_na(vol),by=c('maturity','delta','type','asset')]
 data = vol_features(data)
 data = data[complete.cases(data)]
 
-# MAKE PREDICTIONS
-target = 'log_vol'
-exposures = names(which(sapply(data,is.numeric)==TRUE))
-exposures = exposures[which(!exposures %in% c(target,'vol'))]
-data = data[order(date)]
-train = data[date < val_cutoff_date]
-test = data[date >= val_cutoff_date]
-model = rf_model(train, exposures, target)
-test[,preds_vol:=exp(predict(model,test[,exposures,with=F])$predictions)]
-fwrite(test,'/home/cyril/RinFinance/vol_surface_wpreds.csv')
+fwrite(data,'/home/cyril/RinFinance/vol_surface.csv')
 
+# TO MAKE PREDICTIONS, I USED TFT, YOU CAN FIND HERE https://github.com/mlverse/tft/tree/main
+# THE OUTPUT OF VOL SURFACE PREDICTIONS ARE IN THE FILE: vol_surface_wpreds.csv

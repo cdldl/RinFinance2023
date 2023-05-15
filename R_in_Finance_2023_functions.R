@@ -406,16 +406,13 @@ feature_selection = function(data) {
 }
 
 calculate_ratios <- function(returns, benchmark_returns, rf = 0, omega_threshold = 0, ...) {
-  # Calculate excess returns
-  excess_returns <- Return.excess(returns, Rf = rf)
-  benchmark_excess_returns <- Return.excess(benchmark_returns, Rf = rf)
   
   # Calculate ratios
   ir <- InformationRatio(returns, benchmark_returns)
-  sharpe_ratio <- SharpeRatio.annualized(excess_returns, Rf = rf)[1]
-  sortino_ratio <- SortinoRatio(excess_returns)
-  treynor_ratio <- TreynorRatio(excess_returns, benchmark_excess_returns, Rf = rf)
-  jensen_alpha <- CAPM.jensenAlpha(excess_returns, benchmark_excess_returns, Rf = rf)
+  sharpe_ratio <- SharpeRatio.annualized(returns, Rf = rf)[1]
+  sortino_ratio <- SortinoRatio(returns)
+  treynor_ratio <- TreynorRatio(returns, benchmark_returns, Rf = rf)
+  jensen_alpha <- CAPM.jensenAlpha(returns, benchmark_returns, Rf = rf)
   omega_ratio <- OmegaSharpeRatio(returns)
   mdd <- maxDrawdown(returns)
   
