@@ -59,7 +59,7 @@ data = data[complete.cases(data)]
 # MAKE PREDICTIONS
 target = 'log_vol'
 exposures = names(which(sapply(data,is.numeric)==TRUE))
-exposures = exposures[which(!exposures %in% target)]
+exposures = exposures[which(!exposures %in% c(target,'vol'))]
 data = data[order(date)]
 train = data[date < val_cutoff_date]
 test = data[date >= val_cutoff_date]
