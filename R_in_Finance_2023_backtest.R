@@ -14,6 +14,8 @@ delta_t = 1
 initial_capital = 1e6
 multiplier = 100
 n_days_in_a_month=21
+option_files_path ='/home/cyril/TRADING/ORATS/data/'
+option_path_output = "/home/cyril/TRADING/ORATS/RinFinance/"
 
 # LOAD STOCK AND VOL DATA
 vol = fread('~/code/tft/preds_vol_surface_real_otm_test.csv')
@@ -21,12 +23,14 @@ stock = fread('/home/cyril/RinFinance/stock_wpreds.csv')
 
 # FORMAT DATA 
 vol[,preds_vol:=shift(get('t+0'),1,type='lag',fill=NA),by=identifier]
+
+
 vol[,expected_volatility:=exp(preds_vol)]
 stock[,year_month:=format(date,'%Y-%m')]
 stock[,asset:=symbol]
 
 # LOAD OPTION DATA
-option_files = list.files('/home/cyril/TRADING/ORATS/data/')
+option_files = list.files(option_files_path)
 test= substr(do.call(rbind,strsplit(option_files,'_|.csv'))[,4],1,4)
 option_files = option_files[test >= 2017 & test < 2020]
 options = NULL
@@ -38,6 +42,8 @@ for(file in option_files[1:5]) {
 
 # CONCATENATE OPTIONS WITH STOCK PREDICTIONS
 options[,date:=as.IDate(anytime(trade_date[1])),by=trade_date]
+options[,year_month:=format(date[1],'%Y-%m'),by=date]
+options[,asset:=ticker]
 options = merge(options, stock[,c('me','year_month','asset','preds'),with=F],
                 by=c('year_month','asset'))
 
@@ -54,16 +60,14 @@ vol_puts = vol[type == 'put']
 deltas = sort(unique(vol_calls$delta))
 maturities = sort(unique(vol_calls$maturity))
 
-options[,asset:=ticker]
-options[,year_month:=format(date[1],'%Y-%m'),by=date]
-options[,delta_original:=copy(delta)]
-options[,delta:=deltas[which.min(abs(delta - deltas))],by=seq.int(1,nrow(options))]
+options[,delta_original_call:=shift(delta,1,type='lag'),by=c('asset','strike','expirDate')]
+options[,delta:=deltas[which.min(abs(delta_original_call - deltas))],by=seq.int(1,nrow(options))]
 options[,maturity:=maturities[which.min(abs(yte - maturities))],by=seq.int(1,nrow(options))]
 options = merge(options, vol_calls[,c('date','asset','maturity','delta','expected_volatility'),with=F],
                 by=c('date','asset','delta','maturity'))
 
-options[,delta:=abs(1-delta_original)]
-options[,delta:=deltas[which.min(abs(delta - deltas))],by=seq.int(1,nrow(options))]
+options[,delta_original_put:=shift(1-delta,1,type='lag'),by=c('asset','strike','expirDate')]
+options[,delta:=deltas[which.min(abs(delta_original_put - deltas))],by=seq.int(1,nrow(options))]
 options[,maturity:=maturities[which.min(abs(yte - maturities))],by=seq.int(1,nrow(options))]
 options = merge(options, vol_puts[,c('date','asset','maturity','delta','expected_volatility'),with=F],
                 by=c('date','asset','delta','maturity'))
@@ -109,31 +113,14 @@ options[,real_returns_call:=(cBidPx - lag_call_ask)/lag_call_ask]
 options[,real_returns_put:=(pBidPx - lag_put_ask)/lag_put_ask]
 
 # SET CALLS AND PUTS WITH THRESHOLD GIVEN
-calls = options[expected_returns_call >0.1 & delta_original > 0.3 &
-                  delta_original < 0.55 & maturity < 0.5] 
+calls = options[expected_returns_call >0.]
+calls[,delta:=delta_original_call]
 calls[,real_returns_call:=fifelse(!is.finite(real_returns_call),0,real_returns_call)]
-calls[,delta:=delta_original]
 
-puts = options[expected_returns_put > 0.1 & abs(1-delta_original) > 0.3 & 
-                 abs(1-delta_original) < 0.55  & maturity < 0.5] 
+puts = options[expected_returns_put > 0.]
+puts[,delta:=delta_original_put]
 puts[,real_returns_put:=fifelse(!is.finite(real_returns_put),0,real_returns_put)]
-puts[,delta:=abs(1-delta_original)]
 
-# METRICS CALLS
-cut_exp_ret = cut(calls$expected_returns_call,
-                  unique(quantile(calls$expected_returns_call, seq(0,1,0.1))))
-cut_exp_delta = cut(calls$delta,unique(quantile(calls$delta, seq(0,1,0.1))))
-cut_exp_mat = cut(calls$maturity,unique(quantile(calls$maturity, seq(0,1,0.1))))
-print(tapply(calls$real_returns_call, list(cut_exp_ret,cut_exp_delta,cut_exp_mat),mean,na.rm=T)) 
-
-# METRICS PUTS
-cut_exp_ret = cut(puts$expected_returns_put,
-                  unique(quantile(puts$expected_returns_put, seq(0,1,0.1))))
-cut_exp_delta = cut(puts$delta,unique(quantile(puts$delta, seq(0,1,0.2))))
-cut_exp_mat = cut(puts$maturity,unique(quantile(puts$maturity, seq(0,1,0.1))))
-print(tapply(puts$real_returns_put, list(cut_exp_ret,cut_exp_delta,cut_exp_mat),mean,na.rm=T))
-
-# TRADING
 calls[,margin:=cAskPx*multiplier]
 calls[,expected_returns:=expected_returns_call]
 calls[,real_returns:=real_returns_call]
@@ -142,23 +129,5 @@ puts[,expected_returns:=expected_returns_put]
 puts[,real_returns:=real_returns_put]
 
 trading = rbind(calls,puts)
-trading = trading[order(expected_returns)]
-trading[,cum_margin:=cumsum(margin),by=date]
-fwrite(trading,'/home/cyril/RinFinance/trading.csv')
 
-# INVEST DAILY A MAXIMUM OF YOUR INITIAL CAPITAL (FIXED INITIAL CAPITAL OVER TIME)
-trading2 = trading[,.SD[order(expected_returns)][cum_margin <= initial_capital],by=date]
-
-# PERFORMANCE AGAINST BENCHMARK
-trading3 = trading2[,list(ret=mean(real_returns)/100),by=date]
-benchmark =fread('/home/cyril/TRADING/EOD/data/US/XLK.US.csv')
-benchmark[,benchmark:=(Adjusted_close - shift(Adjusted_close,1,type='lag'))/
-            shift(Adjusted_close,1,type='lag')]
-benchmark$benchmark[1] = 0
-benchmark[,date:=Date]
-combined = merge(trading3,benchmark[,c('date','benchmark'),with=F],by='date')
-fwrite(combined,'/home/cyril/RinFinance/perf_vs_benchmark.csv')
-
-# xt = xts(combined,order.by=as.Date(combined$date))
-# ratios = calculate_ratios(xt[,'ret'],xt[,'benchmark'],rf)
-# print(ratios)
+fwrite(trading,paste0(option_path_output,trading$date[1]))
