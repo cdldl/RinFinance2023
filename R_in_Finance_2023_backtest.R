@@ -105,7 +105,7 @@ results <- fe %dopar% {
   
   # COMPOUND OPTION INPUTS
   options[,expected_maturity:=round((yte*365) - delta_t)/365]
-  options[,expected_stock_price:=(stkPx * (1+preds/n_days_in_a_month))]
+  options[,expected_stock_price:=(shift(stkPx,1,type='lag') * (1+preds/n_days_in_a_month))]
     
   # COMPOUND EXPECTED PRICE OPTIONS
   options = option_pricing(options, delta_t)
