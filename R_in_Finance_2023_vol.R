@@ -59,4 +59,4 @@ data = data[complete.cases(data)]
 fwrite(data,'/home/cyril/RinFinance/vol_surface.csv')
 
 # TO MAKE PREDICTIONS, I USED TFT, YOU CAN FIND HERE https://github.com/mlverse/tft/tree/main
-# THE OUTPUT OF VOL SURFACE PREDICTIONS ARE IN THE FILE: vol_surface_wpreds.csv
+# THE OUTPUT OF VOL SURFACE PREDICTIONS ARE IN THE FILE: preds_vol_surface_real_otm_test.csv

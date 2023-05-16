@@ -532,17 +532,29 @@ get_dividend_yield = function(para, data, end_date) {
   return(sqrt(sum(op_error + delta_error + gamma_error+ vega_error + theta_error)))
 }
 
-option_pricing = function(options) {
-  options[,paste0('option_price_pred',delta_t):= {
+option_pricing = function(options, delta_t) {
+  options[,paste0('option_price_pred_put',delta_t):= {
     if (inherits(try(ans<-AmericanOption('put' 
-                                         , expected_stock_price
+                                         , expected_stock_price 
                                          , strike, divRate, iRate
                                          , expected_maturity
-                                         , expected_volatlity
-                                         , engine= 'CrankNicolson')$value
+                                         , expected_volatility.y)$value
                      ,silent=TRUE),"try-error"))
       0
     else
       ans},
     by = seq.int(1,nrow(options))]
+  
+  options[,paste0('option_price_pred_call',delta_t):= {
+    if (inherits(try(ans<-AmericanOption('call' 
+                                         , expected_stock_price 
+                                         , strike, divRate, iRate
+                                         , expected_maturity
+                                         , expected_volatility.x)$value
+                     ,silent=TRUE),"try-error"))
+      0
+    else
+      ans},
+    by = seq.int(1,nrow(options))]
+  options
 }
