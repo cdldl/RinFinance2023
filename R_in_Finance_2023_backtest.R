@@ -126,9 +126,9 @@ results <- fe %dopar% {
   puts[,real_returns:=fifelse(!is.finite(real_returns_put),0,real_returns_put)]
 
   # SET VARS FOR ANALYSIS
-  calls[,margin:=cAskPx*multiplier]
+  calls[,margin:=lag_call_ask*multiplier]
   calls[,expected_returns:=expected_returns_call]
-  puts[,margin:=pAskPx*multiplier]
+  puts[,margin:=lag_put_ask*multiplier]
   puts[,expected_returns:=expected_returns_put]
   trading = rbind(calls,puts)
   
