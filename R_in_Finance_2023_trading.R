@@ -64,7 +64,7 @@ print(tapply(test$real_returns, list(cut_exp_ret,cut_exp_delta,test$type),sum,na
 trading = test[order(-expected_returns),.SD,by=date]
 trading[,cum_margin:=cumsum(margin),by=date]
 trading[,initial_capital:=initial_capital]
-whi = which(trading$initial_capital <= trading$initial_capital)
+whi = which(trading$cum_margin <= trading$initial_capital)
 trading2 =trading[whi]
 
 # BASIC PERFORMANCE WITHOUT AGGREGATION AND DAILY AGGREGATION
