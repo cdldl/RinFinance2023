@@ -52,9 +52,8 @@ cut_exp_midpoint = cut(val$midpoint,unique(quantile(val$midpoint,seq(0,1,0.2))))
 cut_exp_spread = cut(val$spread,unique(quantile(val$spread,seq(0,1,0.2))))
 print(tapply(val$real_returns, list(cut_exp_ret,cut_exp_delta,val$type),sum,na.rm=T)) 
 
-# METRICS ABOVE MADE ME SELECT THESE THRESHOLDS
-test = options[year(date) >= 2018  & expected_returns>0.35 & delta<0.6 & 
-                 maturity < 0.16 & spread > 0.05 & midpoint > 0.5]
+# ADD METRICS ABOVE TO SELECT THESE THRESHOLDS
+test = options[year(date) >= 2018]
 
 cut_exp_ret = cut(test$expected_returns,unique(quantile(test$expected_returns, seq(0,1,0.1))))
 cut_exp_delta = cut(test$delta,seq(0,1,0.2))
