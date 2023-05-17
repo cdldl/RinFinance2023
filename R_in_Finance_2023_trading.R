@@ -70,9 +70,9 @@ trading2 =trading[whi]
 # BASIC PERFORMANCE WITHOUT AGGREGATION AND DAILY AGGREGATION
 trading2[,ret:=real_returns/multiplier]
 trading2 = trading2[order(date)]
-trading2[,pnl:=fifelse(type=='call', cBidPx - lag_call_ask,pBidPx - lag_put_ask)]
-# trading2 = benchmark[date>min(trading$date)& date < max(trading$date)]
-# trading2[,ret:=benchmark]
+trading2[,pnl:=fifelse(type=='call', cBidPx - lag_call_ask, pBidPx - lag_put_ask)]
+trading2 = benchmark[date>min(trading$date)& date < max(trading$date)]
+trading2[,ret:=benchmark]
 data.table(
   Starting.Period = first(trading2$date),
   Ending.Period = last(trading2$date),
@@ -86,9 +86,9 @@ data.table(
 trading3 = trading2[,list(ret=mean(real_returns,na.rm=T)/multiplier,
                           pnl=sum(fifelse(type=='call', cBidPx - lag_call_ask,
                                           pBidPx - lag_put_ask))),by=date]
-trading3 = copy(trading2)
+#trading3 = copy(trading2)
 data.table(
-  pnl= sum(trading3$ret),
+  pnl= sum(trading3$pnl)/initial_capital,
   pip.trade = mean(trading3$ret,na.rm=T)* 10000,
   win.ratio.strat= (length(which(trading3$ret>0))/length(trading3$ret))*100,
   sharpe= (mean(trading3$ret,na.rm=T)* sqrt(252/delta_t)) / sd(trading3$ret,na.rm=T),
@@ -97,8 +97,8 @@ data.table(
 
 # PERFORMANCE AGAINST BENCHMARK
 benchmark =fread(benchmark_path)
-benchmark[,benchmark:=(Adjusted_close - shift(Adjusted_close,1,type='lag'))/
-            shift(Adjusted_close,1,type='lag')]
+benchmark[,benchmark:=(Adjusted_close - shift(Adjusted_close,delta_t,type='lag'))/
+            shift(Adjusted_close,delta_t,type='lag')]
 benchmark$benchmark[1] = 0
 benchmark[,date:=Date]
 combined = merge(trading3,benchmark[,c('date','benchmark'),with=F],by='date')
