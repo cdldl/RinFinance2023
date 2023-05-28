@@ -7,7 +7,7 @@
 1.  Features as per Bryan Kelly’s work (ExpectedReturns library soon)
 2.  Missing values (ImputeFin library)
 3.  Standardization (FactorAnalytics library)
-4.  Making predictions (lightgbm library)
+4.  Making predictions (ranger (RF) library)
 
 ## 2. Forecasting variance
 
@@ -15,7 +15,7 @@
 
 1.  Filtration (bid available, exclude ITM and so on)
 2.  Volatility surface according to OptionMetrics
-3.  Making predictions (lightgbm library)
+3.  Making predictions (ranger (RF) library)
 4.  Curve fitting to match with respective option maturities and delta
 
 ## *σ*<sup>2</sup>: Volatility Surface
